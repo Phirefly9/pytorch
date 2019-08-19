@@ -1,5 +1,6 @@
 from __future__ import absolute_import, division, print_function, unicode_literals
 
+import math
 from abc import ABCMeta, abstractmethod
 from functools import partial
 
@@ -47,6 +48,8 @@ class ObserverBase(ABC, nn.Module):
         assert min_val <= max_val, "min {} should be less than max {}".format(
             min_val, max_val
         )
+        print("min val = {}".format(min_val))
+        print("max val = {}".format(max_val))
 
         if self.dtype == torch.qint8:
             qmin, qmax = -128, 127
@@ -104,6 +107,56 @@ class MinMaxObserver(ObserverBase):
         if self.max_val is None or self.min_val is None:
             raise Exception("must run observer before calling calculate_qparams!")
         return self._calculate_qparams(self.min_val.item(), self.max_val.item())
+
+
+class HistogramObserver(ObserverBase):
+    r"""
+    The module records the running histogram of tensor values along with
+    min/max values. calculate_qparams will calculate scale and zero_point
+    """
+
+    def __init__(self, bins=2048, **kwargs):
+        super(HistogramObserver, self).__init__(**kwargs)
+        self.bins = bins
+        self.histogram = None
+        self.min_val = None
+        self.max_val = None
+
+    def forward(self, x):
+        if self.min_val is None or self.max_val is None or self.histogram is None:
+            self.min_val = torch.min(x)
+            self.max_val = torch.max(x)
+            range = self.max_val - self.min_val
+            self.relaxed_min = self.min_val - 0.5 * range
+            self.relaxed_max = self.max_val + 0.5 * range
+            self.histogram = torch.histc(
+                x, self.bins, min=self.relaxed_min, max=self.relaxed_max
+            )
+            self.min_val = self.relaxed_min
+            self.max_val = self.relaxed_max
+        else:
+            new_min = torch.min(x)
+            new_max = torch.max(x)
+            new_histogram = torch.histc(
+                x, self.bins, min=self.relaxed_min, max=self.relaxed_max
+            )
+            self.histogram = new_histogram + self.histogram
+
+    def calculate_qparams(self, **kwargs):
+        if self.histogram is None:
+            raise Exception("must run observer before calling calculate_qparams!")
+        histogram_mask = torch.gt(self.histogram, 0).type(torch.int8)
+        c = torch.cumsum(histogram_mask, 0)
+        # Last non-zero bin
+        max_bin = torch.argmax(histogram_mask)
+        # Only one entry is non-zero, find it.
+        min_bin = torch.argmax(torch.eq(c, 1).type(torch.int8))
+        bin_width = (self.max_val.item() - self.min_val.item()) / self.histogram.size()[
+            0
+        ]
+        new_min = self.min_val.item() + min_bin.item() * bin_width
+        new_max = self.min_val.item() + (max_bin.item() + 1) * bin_width
+        return self._calculate_qparams(new_min, new_max)
 
 
 def observer(observer_cls, **kwargs):

@@ -11,7 +11,7 @@ from torch.quantization import \
     QConfig_dynamic, default_weight_observer, \
     quantize, prepare, convert, prepare_qat, quantize_qat, fuse_modules, \
     quantize_dynamic, default_qconfig, default_qat_qconfig, \
-    default_dynamic_qconfig, MinMaxObserver
+    default_dynamic_qconfig, MinMaxObserver, HistogramObserver
 
 from common_utils import run_tests
 from common_quantization import QuantizationTestCase, SingleLayerLinearModel, \
@@ -627,5 +627,19 @@ class ObserverTest(QuantizationTestCase):
         qparams = myobs_qint8.calculate_qparams()
         self.assertAlmostEqual(qparams[0].item(), 0.0313725, delta=1e-5)
         self.assertEqual(qparams[1].item(), -128)
+
+    def test_histogram_observer(self):
+        myobs = HistogramObserver(bins=10)
+        x = torch.tensor([1.0, 2.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+        y = torch.tensor([4.0, 5.0, 5.0, 6.0, 7.0, 8.0])
+        myobs(x)
+        myobs(y)
+        self.assertEqual(myobs.min_val, -1.5)
+        self.assertEqual(myobs.max_val, 8.5)
+        self.assertEqual(myobs.histogram, [0., 0., 1., 2., 1., 2., 3., 2., 1., 1.])
+        qparams = myobs.calculate_qparams()
+        self.assertAlmostEqual(qparams[0].item(), 0.0333333, delta=1e-5)
+        self.assertEqual(qparams[1].item(), 0.0)
+
 if __name__ == '__main__':
     run_tests()
