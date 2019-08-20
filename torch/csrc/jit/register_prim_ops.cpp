@@ -50,7 +50,7 @@ namespace jit {
 
 namespace {
 
-template<class T>
+template <class T>
 c10::List<T> make_result_list() {
   return c10::List<T>();
 }
@@ -676,6 +676,42 @@ RegisterOperators reg(
            return 0;
          },
          aliasAnalysisFromSchema()),
+     Operator(
+         "aten::backward(Tensor[](a!) tensors, Tensor?[]? grad_tensors=None, bool? retain_graph=None, bool create_graph=False) -> ()",
+         [](Stack& stack) {
+           bool create_graph = pop(stack).toBool();
+           auto retain_graph = pop(stack).toOptional<bool>();
+           auto grad_tensors = pop(stack);
+           auto tensors = pop(stack).toTensorListRef().vec();
+           std::vector<torch::autograd::Variable> output_vars(tensors.begin(), tensors.end());
+           std::vector<torch::autograd::Variable> gradients;
+
+           if (!grad_tensors.isNone()) {
+             for (const IValue& v : grad_tensors.toGenericListRef()) {
+               gradients.emplace_back(v.isNone() ? at::Tensor() : v.toTensor());
+             }
+           }
+
+           torch::autograd::backward(
+               output_vars, gradients, retain_graph, create_graph);
+           return 0;
+         },
+         aliasAnalysisSpecialCase()),
+     Operator(
+         "aten::backward(Tensor(a!) self, Tensor? gradient=None, bool? retain_graph=None, bool create_graph=False) -> ()",
+         [](Stack& stack) {
+           bool create_graph = pop(stack).toBool();
+           auto retain_graph = pop(stack).toOptional<bool>();
+           IValue gradient_ivalue = pop(stack);
+           at::Tensor gradient = gradient_ivalue.isNone()
+               ? at::Tensor()
+               : gradient_ivalue.toTensor();
+           at::Tensor self = pop(stack).toTensor();
+           bool keep_graph = retain_graph ? retain_graph.value() : create_graph;
+           self.backward(gradient, keep_graph, create_graph);
+           return 0;
+         },
+         aliasAnalysisSpecialCase()),
      Operator(
          "prim::AutogradZero() -> Tensor",
          [](const Node* node) {
